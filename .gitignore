@@ -1,0 +1,6 @@
+# EMNIST dataset files (re-downloadable via download_data.py; see PROJECT_SPEC.md)
+data/*.gz
+
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

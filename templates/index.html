@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Handwritten Letter Recognizer</title>
+<style>
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    background: #f4f4f6;
+    color: #222;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+  }
+  h1 { font-size: 1.4em; margin-bottom: 4px; }
+  .hint { color: #666; font-size: 0.9em; margin-bottom: 16px; max-width: 420px; text-align: center; }
+  .layout { display: flex; gap: 32px; flex-wrap: wrap; justify-content: center; }
+  #canvas {
+    background: #000;
+    border: 2px solid #333;
+    border-radius: 6px;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  .controls { margin-top: 12px; display: flex; gap: 10px; }
+  button {
+    padding: 8px 18px;
+    font-size: 1em;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    background: #2a6df4;
+    color: white;
+  }
+  button#clearBtn { background: #888; }
+  button:active { opacity: 0.8; }
+  .results { min-width: 220px; }
+  .top-letter { font-size: 3.5em; font-weight: bold; text-align: center; margin: 4px 0; }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .bar-label { width: 20px; font-weight: bold; }
+  .bar-track { flex: 1; background: #e0e0e5; border-radius: 4px; height: 16px; overflow: hidden; }
+  .bar-fill { background: #2a6df4; height: 100%; }
+  .bar-pct { width: 48px; text-align: right; font-size: 0.85em; color: #555; }
+  .preview-box { margin-top: 16px; text-align: center; }
+  #preview {
+    width: 112px;
+    height: 112px;
+    image-rendering: pixelated;
+    border: 1px solid #ccc;
+    background: #000;
+  }
+  .message { color: #a33; font-style: italic; }
+</style>
+</head>
+<body>
+  <h1>Handwritten Letter Recognizer</h1>
+  <p class="hint">Draw a large, single capital letter. The model cannot tell some
+    upper/lower-case pairs apart (e.g. I / l).</p>
+
+  <div class="layout">
+    <div>
+      <canvas id="canvas" width="280" height="280"></canvas>
+      <div class="controls">
+        <button id="clearBtn">Clear</button>
+        <button id="predictBtn">Predict</button>
+      </div>
+      <div class="preview-box">
+        <div>What the model sees</div>
+        <img id="preview" alt="28x28 preview">
+      </div>
+    </div>
+
+    <div class="results">
+      <div id="topLetter" class="top-letter">&nbsp;</div>
+      <div id="bars"></div>
+      <div id="message" class="message"></div>
+    </div>
+  </div>
+
+<script>
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const BRUSH_WIDTH = 20;
+let drawing = false;
+let lastX = 0, lastY = 0;
+let autoPredictTimer = null;
+
+function clearCanvas() {
+  ctx.fillStyle = "black";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  document.getElementById("topLetter").textContent = " ";
+  document.getElementById("bars").innerHTML = "";
+  document.getElementById("message").textContent = "";
+  document.getElementById("preview").removeAttribute("src");
+}
+clearCanvas();
+
+function pointerPos(evt) {
+  const rect = canvas.getBoundingClientRect();
+  const touch = evt.touches && evt.touches[0];
+  const clientX = touch ? touch.clientX : evt.clientX;
+  const clientY = touch ? touch.clientY : evt.clientY;
+  return [clientX - rect.left, clientY - rect.top];
+}
+
+function strokeTo(x, y) {
+  ctx.strokeStyle = "white";
+  ctx.lineWidth = BRUSH_WIDTH;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(lastX, lastY);
+  ctx.lineTo(x, y);
+  ctx.stroke();
+  lastX = x; lastY = y;
+}
+
+function startDraw(evt) {
+  evt.preventDefault();
+  drawing = true;
+  [lastX, lastY] = pointerPos(evt);
+  ctx.fillStyle = "white";
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, BRUSH_WIDTH / 2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function moveDraw(evt) {
+  if (!drawing) return;
+  evt.preventDefault();
+  const [x, y] = pointerPos(evt);
+  strokeTo(x, y);
+}
+
+function endDraw() {
+  if (!drawing) return;
+  drawing = false;
+  clearTimeout(autoPredictTimer);
+  autoPredictTimer = setTimeout(predict, 400); // auto-predict shortly after the pen lifts
+}
+
+canvas.addEventListener("mousedown", startDraw);
+canvas.addEventListener("mousemove", moveDraw);
+window.addEventListener("mouseup", endDraw);
+canvas.addEventListener("touchstart", startDraw);
+canvas.addEventListener("touchmove", moveDraw);
+canvas.addEventListener("touchend", endDraw);
+
+document.getElementById("clearBtn").addEventListener("click", clearCanvas);
+document.getElementById("predictBtn").addEventListener("click", predict);
+
+async function predict() {
+  const dataUrl = canvas.toDataURL("image/png");
+  const resp = await fetch("/predict", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image: dataUrl }),
+  });
+  const data = await resp.json();
+
+  const topLetter = document.getElementById("topLetter");
+  const bars = document.getElementById("bars");
+  const message = document.getElementById("message");
+  bars.innerHTML = "";
+
+  if (data.empty) {
+    topLetter.textContent = " ";
+    message.textContent = data.message || "Draw a letter first.";
+    document.getElementById("preview").removeAttribute("src");
+    return;
+  }
+
+  message.textContent = "";
+  topLetter.textContent = data.top3[0].letter;
+  document.getElementById("preview").src = data.preview;
+
+  for (const { letter, probability } of data.top3) {
+    const pct = (probability * 100).toFixed(1);
+    const row = document.createElement("div");
+    row.className = "bar-row";
+    row.innerHTML = `
+      <div class="bar-label">${letter}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+      <div class="bar-pct">${pct}%</div>`;
+    bars.appendChild(row);
+  }
+}
+</script>
+</body>
+</html>
